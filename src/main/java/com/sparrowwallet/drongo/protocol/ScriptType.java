@@ -9,6 +9,7 @@ import com.sparrowwallet.drongo.crypto.ECKey;
 import com.sparrowwallet.drongo.policy.PolicyType;
 
 import java.util.*;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static com.sparrowwallet.drongo.policy.PolicyType.*;
@@ -311,7 +312,7 @@ public enum ScriptType {
         }
 
         @Override
-        public Script getOutputScript(int threshold, Collection<ECKey> pubKeys) {
+        public Script getOutputScript(int threshold, Collection<ECKey> pubKeys, boolean sorted) {
             if(threshold > pubKeys.size()) {
                 throw new ProtocolException("Threshold of " + threshold + " is greater than number of pubKeys provided (" + pubKeys.size() + ")");
             }
@@ -320,7 +321,9 @@ public enum ScriptType {
             for(ECKey key : pubKeys) {
                 pubKeyBytes.add(key.getPubKey());
             }
-            pubKeyBytes.sort(new Utils.LexicographicByteArrayComparator());
+            if(sorted) {
+                pubKeyBytes.sort(new Utils.LexicographicByteArrayComparator());
+            }
 
             List<ScriptChunk> chunks = new ArrayList<>();
             chunks.add(new ScriptChunk(Script.encodeToOpN(threshold), null));
@@ -350,19 +353,29 @@ public enum ScriptType {
             for(ECKey key : pubKeys) {
                 pubKeyBytes.add(key.getPubKey());
             }
-            pubKeyBytes.sort(new Utils.LexicographicByteArrayComparator());
+            List<byte[]> sortedPubKeyBytes = new ArrayList<>(pubKeyBytes);
+            sortedPubKeyBytes.sort(new Utils.LexicographicByteArrayComparator());
+            boolean sorted = true;
+            for(int i = 0; i < pubKeyBytes.size(); i++) {
+                sorted &= Arrays.equals(pubKeyBytes.get(i), sortedPubKeyBytes.get(i));
+            }
 
             StringJoiner joiner = new StringJoiner(",");
             for(byte[] pubKey : pubKeyBytes) {
                 joiner.add(Utils.bytesToHex(pubKey));
             }
 
-            return getDescriptor() + threshold + "," + joiner.toString() + getCloseDescriptor();
+            return (sorted ? getDescriptor() : getUnsortedDescriptor()) + threshold + "," + joiner.toString() + getCloseDescriptor();
         }
 
         @Override
         public String getDescriptor() {
             return "sortedmulti(";
+        }
+
+        @Override
+        public String getUnsortedDescriptor() {
+            return "multi(";
         }
 
         @Override
@@ -593,7 +606,7 @@ public enum ScriptType {
                 throw new ProtocolException("Provided scriptPubKey is not a " + getName() + " script");
             }
 
-            Script redeemScript = MULTISIG.getOutputScript(threshold, pubKeySignatures.keySet());
+            Script redeemScript = getMultisigScript(threshold, pubKeySignatures.keySet(), scriptPubKey, this::getOutputScript);
             if(!scriptPubKey.equals(getOutputScript(redeemScript))) {
                 throw new ProtocolException("P2SH scriptPubKey hash does not match constructed redeem script hash");
             }
@@ -819,7 +832,7 @@ public enum ScriptType {
                 throw new ProtocolException("Provided scriptPubKey is not a " + getName() + " script");
             }
 
-            Script witnessScript = MULTISIG.getOutputScript(threshold, pubKeySignatures.keySet());
+            Script witnessScript = getMultisigScript(threshold, pubKeySignatures.keySet(), scriptPubKey, script -> P2SH.getOutputScript(P2WSH.getOutputScript(script)));
             Script redeemScript = P2WSH.getOutputScript(witnessScript);
             if(!scriptPubKey.equals(P2SH.getOutputScript(redeemScript))) {
                 throw new ProtocolException("P2SH scriptPubKey hash does not match constructed redeem script hash");
@@ -832,7 +845,7 @@ public enum ScriptType {
         @Override
         public TransactionInput addMultisigSpendingInput(PolicyType policyType, Transaction transaction, TransactionOutput prevOutput, int threshold, Map<ECKey, TransactionSignature> pubKeySignatures) {
             Script scriptSig = getMultisigScriptSig(policyType, prevOutput.getScript(), threshold, pubKeySignatures);
-            Script witnessScript = MULTISIG.getOutputScript(threshold, pubKeySignatures.keySet());
+            Script witnessScript = getMultisigScript(threshold, pubKeySignatures.keySet(), prevOutput.getScript(), script -> P2SH.getOutputScript(P2WSH.getOutputScript(script)));
             TransactionWitness witness = new TransactionWitness(transaction, pubKeySignatures.values().stream().filter(Objects::nonNull).limit(threshold).collect(Collectors.toList()), witnessScript);
             return transaction.addInput(prevOutput.getHash(), prevOutput.getIndex(), scriptSig, witness);
         }
@@ -1059,7 +1072,7 @@ public enum ScriptType {
                 throw new ProtocolException("Provided scriptPubKey is not a " + getName() + " script");
             }
 
-            Script witnessScript = MULTISIG.getOutputScript(threshold, pubKeySignatures.keySet());
+            Script witnessScript = getMultisigScript(threshold, pubKeySignatures.keySet(), scriptPubKey, P2WSH::getOutputScript);
             if(!scriptPubKey.equals(P2WSH.getOutputScript(witnessScript))) {
                 throw new ProtocolException("P2WSH scriptPubKey hash does not match constructed witness script hash");
             }
@@ -1070,7 +1083,7 @@ public enum ScriptType {
         @Override
         public TransactionInput addMultisigSpendingInput(PolicyType policyType, Transaction transaction, TransactionOutput prevOutput, int threshold, Map<ECKey, TransactionSignature> pubKeySignatures) {
             Script scriptSig = getMultisigScriptSig(policyType, prevOutput.getScript(), threshold, pubKeySignatures);
-            Script witnessScript = MULTISIG.getOutputScript(threshold, pubKeySignatures.keySet());
+            Script witnessScript = getMultisigScript(threshold, pubKeySignatures.keySet(), prevOutput.getScript(), P2WSH::getOutputScript);
             TransactionWitness witness = new TransactionWitness(transaction, pubKeySignatures.values().stream().filter(Objects::nonNull).limit(threshold).collect(Collectors.toList()), witnessScript);
             return transaction.addInput(prevOutput.getHash(), prevOutput.getIndex(), scriptSig, witness);
         }
@@ -1439,7 +1452,21 @@ public enum ScriptType {
     public abstract Script getOutputScript(Script script);
 
     public Script getOutputScript(int threshold, Collection<ECKey> pubKeys) {
+        return getOutputScript(threshold, pubKeys, true);
+    }
+
+    public Script getOutputScript(int threshold, Collection<ECKey> pubKeys, boolean sorted) {
         throw new UnsupportedOperationException("Only defined for MULTISIG script type");
+    }
+
+    //Returns the sortedmulti() script if the scriptPubKey commits to it, otherwise the multi() script with the keys in the order provided
+    protected static Script getMultisigScript(int threshold, Collection<ECKey> pubKeys, Script scriptPubKey, Function<Script, Script> outputScript) {
+        Script sortedScript = MULTISIG.getOutputScript(threshold, pubKeys, true);
+        if(scriptPubKey.equals(outputScript.apply(sortedScript))) {
+            return sortedScript;
+        }
+
+        return MULTISIG.getOutputScript(threshold, pubKeys, false);
     }
 
     public abstract String getOutputDescriptor(ECKey key);
@@ -1451,6 +1478,10 @@ public enum ScriptType {
     public abstract String getOutputDescriptor(Script script);
 
     public abstract String getDescriptor();
+
+    public String getUnsortedDescriptor() {
+        return getDescriptor();
+    }
 
     public String getCloseDescriptor() {
         return getDescriptor().chars().filter(ch -> ch == '(').boxed().map(n -> ")").collect(Collectors.joining());

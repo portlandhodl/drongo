@@ -8,6 +8,7 @@ public class Miniscript {
     private static final Pattern TAPROOT_PATTERN = Pattern.compile("tr\\(");
     private static final Pattern SILENT_PAYMENTS_PATTERN = Pattern.compile("sp\\(");
     private static final Pattern MULTI_PATTERN = Pattern.compile("multi\\((\\d+)");
+    private static final Pattern UNSORTED_MULTI_PATTERN = Pattern.compile("(?<!sorted)multi\\(");
 
     private String script;
 
@@ -46,6 +47,10 @@ public class Miniscript {
         } else {
             throw new IllegalArgumentException("Could not find multisig threshold in " + this);
         }
+    }
+
+    public boolean isSortedMultisig() {
+        return !UNSORTED_MULTI_PATTERN.matcher(script).find();
     }
 
     public Miniscript copy() {

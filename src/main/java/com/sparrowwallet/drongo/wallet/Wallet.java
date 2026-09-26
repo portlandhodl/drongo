@@ -733,7 +733,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
             return scriptType.getAddress(policyType, pubKey);
         } else if(policyType == PolicyType.MULTI_HD) {
             List<ECKey> pubKeys = node.getPubKeys();
-            Script script = ScriptType.MULTISIG.getOutputScript(defaultPolicy.getNumSignaturesRequired(), pubKeys);
+            Script script = ScriptType.MULTISIG.getOutputScript(defaultPolicy.getNumSignaturesRequired(), pubKeys, isSortedMultisig());
             return scriptType.getAddress(script);
         } else {
             throw new UnsupportedOperationException("Cannot determine addresses for custom policies");
@@ -746,7 +746,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
             return scriptType.getOutputScript(policyType, pubKey);
         } else if(policyType == PolicyType.MULTI_HD) {
             List<ECKey> pubKeys = node.getPubKeys();
-            Script script = ScriptType.MULTISIG.getOutputScript(defaultPolicy.getNumSignaturesRequired(), pubKeys);
+            Script script = ScriptType.MULTISIG.getOutputScript(defaultPolicy.getNumSignaturesRequired(), pubKeys, isSortedMultisig());
             return scriptType.getOutputScript(script);
         } else {
             throw new UnsupportedOperationException("Cannot determine output script for custom policies");
@@ -759,11 +759,20 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
             return scriptType.getOutputDescriptor(policyType, pubKey);
         } else if(policyType == PolicyType.MULTI_HD) {
             List<ECKey> pubKeys = node.getPubKeys();
-            Script script = ScriptType.MULTISIG.getOutputScript(defaultPolicy.getNumSignaturesRequired(), pubKeys);
+            Script script = ScriptType.MULTISIG.getOutputScript(defaultPolicy.getNumSignaturesRequired(), pubKeys, isSortedMultisig());
             return scriptType.getOutputDescriptor(script);
         } else {
             throw new UnsupportedOperationException("Cannot determine output descriptor for custom policies");
         }
+    }
+
+    public boolean isSortedMultisig() {
+        return defaultPolicy == null || defaultPolicy.isSortedMultisig();
+    }
+
+    //Signatures must be provided in the order of the keys in the multisig script
+    private Map<ECKey, TransactionSignature> getPubKeySignatureMap() {
+        return isSortedMultisig() ? new TreeMap<>(new ECKey.LexicographicECKeyComparator()) : new LinkedHashMap<>();
     }
 
     public List<KeyPurpose> getWalletKeyPurposes() {
@@ -1057,7 +1066,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         } else if(getPolicyType().equals(PolicyType.MULTI_HD)) {
             List<ECKey> pubKeys = receiveNode.getPubKeys();
             int threshold = getDefaultPolicy().getNumSignaturesRequired();
-            Map<ECKey, TransactionSignature> pubKeySignatures = new TreeMap<>(new ECKey.LexicographicECKeyComparator());
+            Map<ECKey, TransactionSignature> pubKeySignatures = getPubKeySignatureMap();
             for(int i = 0; i < pubKeys.size(); i++) {
                 pubKeySignatures.put(pubKeys.get(i), i < threshold ? TransactionSignature.dummy(getScriptType().getSignatureType()) : null);
             }
@@ -1305,7 +1314,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
         } else if(signingWallet.getPolicyType().equals(PolicyType.MULTI_HD)) {
             List<ECKey> pubKeys = walletNode.getPubKeys();
             int threshold = signingWallet.getDefaultPolicy().getNumSignaturesRequired();
-            Map<ECKey, TransactionSignature> pubKeySignatures = new TreeMap<>(new ECKey.LexicographicECKeyComparator());
+            Map<ECKey, TransactionSignature> pubKeySignatures = signingWallet.getPubKeySignatureMap();
             for(int i = 0; i < pubKeys.size(); i++) {
                 pubKeySignatures.put(pubKeys.get(i), i < threshold ? TransactionSignature.dummy(signingWallet.getScriptType().getSignatureType()) : null);
             }
@@ -2049,7 +2058,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                 } else if(signingWallet.getPolicyType().equals(PolicyType.MULTI_HD)) {
                     List<ECKey> pubKeys = signingNode.getPubKeys();
 
-                    Map<ECKey, TransactionSignature> pubKeySignatures = new TreeMap<>(new ECKey.LexicographicECKeyComparator());
+                    Map<ECKey, TransactionSignature> pubKeySignatures = signingWallet.getPubKeySignatureMap();
                     for(ECKey pubKey : pubKeys) {
                         pubKeySignatures.put(pubKey, psbtInput.getPartialSignature(pubKey));
                     }
@@ -2098,7 +2107,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
 
         if(MULTISIG.isScriptType(signingScript)) {
             ECKey[] scriptPubKeys = MULTISIG.getPublicKeysFromScript(signingScript);
-            Map<ECKey, TransactionSignature> pubKeySignatures = new TreeMap<>(new ECKey.LexicographicECKeyComparator());
+            Map<ECKey, TransactionSignature> pubKeySignatures = new LinkedHashMap<>();
             for(ECKey pubKey : scriptPubKeys) {
                 pubKeySignatures.put(pubKey, psbtInput.getPartialSignature(pubKey));
             }

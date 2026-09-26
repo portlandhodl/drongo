@@ -6,6 +6,7 @@ import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.ScriptType;
 import com.sparrowwallet.drongo.silentpayments.SilentPaymentScanAddress;
 import com.sparrowwallet.drongo.wallet.Wallet;
+import com.sparrowwallet.drongo.wallet.WalletNode;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -102,7 +103,7 @@ public class OutputDescriptorTest {
     @Test
     public void testChecksum() {
         OutputDescriptor descriptor = OutputDescriptor.getOutputDescriptor("sh(multi(2,[00000000/111'/222]xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL,xpub68NZiKmJWnxxS6aaHmn81bvJeTESw724CRDs6HbuccFQN9Ku14VQrADWgqbhhTHBaohPX4CjNLf9fq9MYo6oDaPPLPxSb7gwQN3ih19Zm4Y/0))#tjg09x5t");
-        Assertions.assertEquals("sh(sortedmulti(2,[00000000/111h/222]xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL,xpub68NZiKmJWnxxS6aaHmn81bvJeTESw724CRDs6HbuccFQN9Ku14VQrADWgqbhhTHBaohPX4CjNLf9fq9MYo6oDaPPLPxSb7gwQN3ih19Zm4Y/0))#vqfgjk5v", descriptor.toString(true));
+        Assertions.assertEquals("sh(multi(2,[00000000/111h/222]xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL,xpub68NZiKmJWnxxS6aaHmn81bvJeTESw724CRDs6HbuccFQN9Ku14VQrADWgqbhhTHBaohPX4CjNLf9fq9MYo6oDaPPLPxSb7gwQN3ih19Zm4Y/0))#hgmsckna", descriptor.toString(true));
     }
 
     private static final String MULTI_KEY_1 = "[04fefef0/48h/0h/0h/2h]xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8idoc4a6mr8BDzTJY47LJhkJ8UB7WEGuduB/0/*";
@@ -560,5 +561,46 @@ public class OutputDescriptorTest {
         OutputDescriptor template = OutputDescriptor.getOutputDescriptor(p2shP2wsh.replace("/0/0", "/**"));
         Assertions.assertEquals(p2shP2wshDescriptor.getAddress(p2shP2wshDescriptor.getChildDerivation()),
                 template.toWallet().getNode(KeyPurpose.RECEIVE).getChildren().iterator().next().getAddress());
+    }
+
+    private static final String UNSORTED_XPUB_A = "[00000004/0/0/0/0]xpub6ESApoTBCctw7rBf6A2kKaMekdtXQ9SS1MmWxYCZEUcjRptReaFvi1NXCaUhiSNCzaxeMzzh1S6sMud4ihHnv46jjF8nFnrAmpX6pdRsAd6";
+    private static final String UNSORTED_XPUB_B = "[00000003/0/0/0/0]xpub6EWeDK8fGBHhUgb5udr7kmdsgxPd613AQGh2ZPvmDtrSdU3Hyqr3yGaozpTDhHexCczjt8maQpS68aqxL1bduwh6UDf8zPayLRLZCpaVdzr";
+    private static final String UNSORTED_XPUB_C = "[00000005/0/0/0/0]xpub6D7FUuTvP5SN6YyyVriZwjLWCDDKkkoDdJ18DkU4rivAxW9n9Sz8iPC79h1UmZBhNTdNQEW67mLFQQKAHsUB8fTRkQ2W6FZKdsq1gkUdjWd";
+
+    private static String unsortedDescriptor(String multi, String childDerivation) {
+        return "wsh(" + multi + "(2," + UNSORTED_XPUB_A + childDerivation + "," + UNSORTED_XPUB_B + childDerivation + "," + UNSORTED_XPUB_C + childDerivation + "))";
+    }
+
+    @Test
+    public void testUnsortedMultisig() {
+        //Expected addresses from Bitcoin Core deriveaddresses
+        OutputDescriptor descriptor = OutputDescriptor.getOutputDescriptor(unsortedDescriptor("multi", "/0/*"));
+        Assertions.assertFalse(descriptor.isSortedMultisig());
+        Assertions.assertEquals("bc1q95rnxlmjfw80jcn0g7pef2048a8qaylp2al90rfscekr452dnmxsl2cy4k", descriptor.getAddress(descriptor.getReceivingDerivation(0)).toString());
+        Assertions.assertEquals("bc1qvt70xc7sp498z4y35x5rutyljwmre77jdrfagncgmygkfmutwtasp47xm6", descriptor.getAddress(descriptor.getReceivingDerivation(1)).toString());
+        Assertions.assertEquals("bc1q3d6ulcasrekq83y8hj0lf6alyqrapm8l7qevjsf90qtjqgzm6auqwednrk", descriptor.getAddress(descriptor.getChangeDerivation(0)).toString());
+        Assertions.assertEquals(unsortedDescriptor("multi", "/0/*"), descriptor.toString());
+
+        Wallet wallet = descriptor.toWallet();
+        Assertions.assertFalse(wallet.isSortedMultisig());
+        Assertions.assertEquals("bc1q95rnxlmjfw80jcn0g7pef2048a8qaylp2al90rfscekr452dnmxsl2cy4k", new WalletNode(wallet, KeyPurpose.RECEIVE, 0).getAddress().toString());
+        Assertions.assertEquals("bc1qnhq2q88scm30n3e9970c5stuezkaeht44v5rv7vaadz5y4vdxatsmfx0ln", new WalletNode(wallet, KeyPurpose.RECEIVE, 2).getAddress().toString());
+        Assertions.assertEquals("bc1q3d6ulcasrekq83y8hj0lf6alyqrapm8l7qevjsf90qtjqgzm6auqwednrk", new WalletNode(wallet, KeyPurpose.CHANGE, 0).getAddress().toString());
+        Assertions.assertEquals("bc1q4k2eycnssyl77na44dp6edhqraeuljf6em04uuv7m6653kcclags7yyd4h", new WalletNode(wallet, KeyPurpose.CHANGE, 2).getAddress().toString());
+
+        OutputDescriptor walletDescriptor = OutputDescriptor.getOutputDescriptor(wallet, KeyPurpose.DEFAULT_PURPOSES, null);
+        Assertions.assertEquals(unsortedDescriptor("multi", "/<0;1>/*"), walletDescriptor.toString());
+        Assertions.assertEquals(walletDescriptor, OutputDescriptor.getOutputDescriptor(walletDescriptor.toString()));
+    }
+
+    @Test
+    public void testSortedMultisigUnchanged() {
+        OutputDescriptor descriptor = OutputDescriptor.getOutputDescriptor(unsortedDescriptor("sortedmulti", "/0/*"));
+        Assertions.assertTrue(descriptor.isSortedMultisig());
+
+        Wallet wallet = descriptor.toWallet();
+        Assertions.assertTrue(wallet.isSortedMultisig());
+        Assertions.assertEquals("bc1qk5xy0ehuf83afz90v729z6pmxgcluaqptvxqh8v99c3xml5zz4gs8gdlcn", new WalletNode(wallet, KeyPurpose.RECEIVE, 0).getAddress().toString());
+        Assertions.assertEquals("bc1q29wdy2cata0z59c8l8v2fz26f0v7ulstr292mlnuzt58vrxs069srz6wl6", new WalletNode(wallet, KeyPurpose.CHANGE, 0).getAddress().toString());
     }
 }

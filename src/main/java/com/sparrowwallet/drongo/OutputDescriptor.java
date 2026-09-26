@@ -49,6 +49,7 @@ public class OutputDescriptor {
     private final Map<SilentPaymentScanAddress, KeyDerivation> silentPaymentScanAddresses;
     private final Map<SilentPaymentScanAddress, String> mapSilentPaymentLabels;
     private final Map<String, Integer> annotations;
+    private final boolean sortedMultisig;
 
     public OutputDescriptor(ScriptType scriptType, ExtendedKey extendedPublicKey, KeyDerivation keyDerivation) {
         this(scriptType, Collections.singletonMap(extendedPublicKey, keyDerivation));
@@ -79,6 +80,10 @@ public class OutputDescriptor {
     }
 
     public OutputDescriptor(ScriptType scriptType, int multisigThreshold, Map<ExtendedKey, KeyDerivation> extendedPublicKeys, Map<ExtendedKey, String> mapChildrenDerivations, Map<ExtendedKey, String> mapExtendedPublicKeyLabels, Map<ExtendedKey, ExtendedKey> extendedMasterPrivateKeys, Map<String, Integer> annotations) {
+        this(scriptType, multisigThreshold, extendedPublicKeys, mapChildrenDerivations, mapExtendedPublicKeyLabels, extendedMasterPrivateKeys, annotations, true);
+    }
+
+    public OutputDescriptor(ScriptType scriptType, int multisigThreshold, Map<ExtendedKey, KeyDerivation> extendedPublicKeys, Map<ExtendedKey, String> mapChildrenDerivations, Map<ExtendedKey, String> mapExtendedPublicKeyLabels, Map<ExtendedKey, ExtendedKey> extendedMasterPrivateKeys, Map<String, Integer> annotations, boolean sortedMultisig) {
         this.scriptType = scriptType;
         this.multisigThreshold = multisigThreshold;
         this.extendedPublicKeys = extendedPublicKeys;
@@ -88,6 +93,7 @@ public class OutputDescriptor {
         this.silentPaymentScanAddresses = new LinkedHashMap<>();
         this.mapSilentPaymentLabels = new LinkedHashMap<>();
         this.annotations = annotations;
+        this.sortedMultisig = sortedMultisig;
     }
 
     public OutputDescriptor(Map<SilentPaymentScanAddress, KeyDerivation> silentPaymentScanAddresses, Map<SilentPaymentScanAddress, String> mapSilentPaymentLabels) {
@@ -104,6 +110,7 @@ public class OutputDescriptor {
         this.silentPaymentScanAddresses = silentPaymentScanAddresses;
         this.mapSilentPaymentLabels = mapSilentPaymentLabels;
         this.annotations = annotations;
+        this.sortedMultisig = true;
     }
 
     public Set<ExtendedKey> getExtendedPublicKeys() {
@@ -196,6 +203,10 @@ public class OutputDescriptor {
 
     public boolean isMultisig() {
         return extendedPublicKeys.size() > 1;
+    }
+
+    public boolean isSortedMultisig() {
+        return sortedMultisig;
     }
 
     public boolean isCosigner() {
@@ -301,7 +312,7 @@ public class OutputDescriptor {
             keys.add(pubKey.getKey(keyPath));
         }
 
-        return ScriptType.MULTISIG.getOutputScript(multisigThreshold, keys);
+        return ScriptType.MULTISIG.getOutputScript(multisigThreshold, keys, sortedMultisig);
     }
 
     private List<ChildNumber> getKeyPath(ExtendedKey pubKey, List<ChildNumber> childPath) {
@@ -356,7 +367,7 @@ public class OutputDescriptor {
             wallet.getKeystores().add(keystore);
         }
 
-        wallet.setDefaultPolicy(Policy.getPolicy(wallet.getPolicyType(), wallet.getScriptType(), wallet.getKeystores(), getMultisigThreshold()));
+        wallet.setDefaultPolicy(Policy.getPolicy(wallet.getPolicyType(), wallet.getScriptType(), wallet.getKeystores(), getMultisigThreshold(), sortedMultisig));
         applyAnnotations(wallet);
 
         return wallet;
@@ -488,7 +499,7 @@ public class OutputDescriptor {
             }
         }
 
-        return new OutputDescriptor(wallet.getScriptType(), wallet.getDefaultPolicy().getNumSignaturesRequired(), extendedKeyDerivationMap, extendedKeyChildDerivationMap);
+        return new OutputDescriptor(wallet.getScriptType(), wallet.getDefaultPolicy().getNumSignaturesRequired(), extendedKeyDerivationMap, extendedKeyChildDerivationMap, new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(), wallet.isSortedMultisig());
     }
 
     private static Map<String, Integer> getWalletAnnotations(Wallet wallet) {
@@ -632,7 +643,8 @@ public class OutputDescriptor {
             throw new IllegalArgumentException("Invalid multisig threshold of " + multisigThreshold + " in a descriptor providing " + keyDerivationMap.size() + " key" + (keyDerivationMap.size() == 1 ? "" : "s"));
         }
 
-        return new OutputDescriptor(scriptType, Math.max(multisigThreshold, 1), keyDerivationMap, keyChildDerivationMap, mapExtendedPublicKeyLabels, masterPrivateKeyMap, annotations);
+        boolean sortedMultisig = !LEGACY_MULTI_PATTERN.matcher(descriptor).find();
+        return new OutputDescriptor(scriptType, Math.max(multisigThreshold, 1), keyDerivationMap, keyChildDerivationMap, mapExtendedPublicKeyLabels, masterPrivateKeyMap, annotations, sortedMultisig);
     }
 
     public static boolean isSilentPaymentDescriptor(String descriptor) {
@@ -912,10 +924,10 @@ public class OutputDescriptor {
             builder.append(scriptType.getDescriptor());
 
             if(isMultisig()) {
-                builder.append(ScriptType.MULTISIG.getDescriptor());
+                builder.append(sortedMultisig ? ScriptType.MULTISIG.getDescriptor() : ScriptType.MULTISIG.getUnsortedDescriptor());
                 StringJoiner joiner = new StringJoiner(",");
                 joiner.add(Integer.toString(multisigThreshold));
-                for(ExtendedKey pubKey : sortExtendedPubKeys(extendedPublicKeys.keySet())) {
+                for(ExtendedKey pubKey : sortedMultisig ? sortExtendedPubKeys(extendedPublicKeys.keySet()) : extendedPublicKeys.keySet()) {
                     String extKeyString = toString(pubKey, addKeyOrigin, addKey);
                     joiner.add(extKeyString);
                 }
@@ -1096,7 +1108,7 @@ public class OutputDescriptor {
         Map<ExtendedKey, ExtendedKey> copyExtendedMasterPrivateKeys = new LinkedHashMap<>(extendedMasterPrivateKeys);
         Map<String, Integer> copyAnnotations = new LinkedHashMap<>(annotations);
 
-        if(!includeChildDerivations) {
+        if(!includeChildDerivations && sortedMultisig) {
             //Ensure consistent xpub order by sorting on the first receive address
             Map<ExtendedKey, String> childDerivations = copyExtendedPublicKeys.entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey, _ -> "/0/0"));
             OutputDescriptor copyFirstReceive = new OutputDescriptor(scriptType, multisigThreshold, copyExtendedPublicKeys, childDerivations);
@@ -1105,6 +1117,6 @@ public class OutputDescriptor {
             return new OutputDescriptor(scriptType, multisigThreshold, copySortedXpubs.extendedPublicKeys, Collections.emptyMap(), copyExtendedPublicKeyLabels, copyExtendedMasterPrivateKeys, copyAnnotations);
         }
 
-        return new OutputDescriptor(scriptType, multisigThreshold, copyExtendedPublicKeys, copyChildDerivations, copyExtendedPublicKeyLabels, copyExtendedMasterPrivateKeys, copyAnnotations);
+        return new OutputDescriptor(scriptType, multisigThreshold, copyExtendedPublicKeys, includeChildDerivations ? copyChildDerivations : Collections.emptyMap(), copyExtendedPublicKeyLabels, copyExtendedMasterPrivateKeys, copyAnnotations, sortedMultisig);
     }
 }

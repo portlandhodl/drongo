@@ -40,7 +40,15 @@ public class Policy extends Persistable {
         return getMiniscript().getNumSignaturesRequired();
     }
 
+    public boolean isSortedMultisig() {
+        return getMiniscript().isSortedMultisig();
+    }
+
     public static Policy getPolicy(PolicyType policyType, ScriptType scriptType, List<Keystore> keystores, Integer threshold) {
+        return getPolicy(policyType, scriptType, keystores, threshold, true);
+    }
+
+    public static Policy getPolicy(PolicyType policyType, ScriptType scriptType, List<Keystore> keystores, Integer threshold, boolean sortedMultisig) {
         if(SINGLE_HD.equals(policyType)) {
             return new Policy(new Miniscript(scriptType.getDescriptor() + keystores.get(0).getScriptName() + scriptType.getCloseDescriptor()));
         }
@@ -48,7 +56,7 @@ public class Policy extends Persistable {
         if(MULTI_HD.equals(policyType)) {
             StringBuilder builder = new StringBuilder();
             builder.append(scriptType.getDescriptor());
-            builder.append(MULTISIG.getDescriptor());
+            builder.append(sortedMultisig ? MULTISIG.getDescriptor() : MULTISIG.getUnsortedDescriptor());
             builder.append(threshold);
             for(Keystore keystore : keystores) {
                 builder.append(",").append(keystore.getScriptName());
