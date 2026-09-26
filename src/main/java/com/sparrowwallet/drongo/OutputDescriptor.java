@@ -31,6 +31,7 @@ public class OutputDescriptor {
     public static final Pattern LEGACY_MULTI_PATTERN = Pattern.compile("(?<!sorted)multi\\(\\s*\\d+", Pattern.CASE_INSENSITIVE);
     public static final Pattern KEY_ORIGIN_PATTERN = Pattern.compile("\\[([A-Fa-f0-9]{8})([/\\d'hH]+)?\\]");
     private static final Pattern MULTIPATH_PATTERN = Pattern.compile("<([\\d*'hH;]+)>");
+    private static final Pattern CHAINS_PATTERN = Pattern.compile("/<\\d+;\\d+>/\\*$");
     private static final Pattern CHECKSUM_PATTERN = Pattern.compile("#([" + CHECKSUM_CHARSET + "]{8})$");
     private static final Pattern ANNOTATION_PATTERN = Pattern.compile("([a-zA-Z]+)=([0-9]+)");
 
@@ -152,6 +153,11 @@ public class OutputDescriptor {
             childDerivationPath = "/0/*";
         }
 
+        List<ChildNumber> multipathDerivation = getMultipathDerivation(extendedPublicKey, childDerivationPath, 0, wildCardReplacement);
+        if(multipathDerivation != null) {
+            return multipathDerivation;
+        }
+
         if(describesMultipleAddresses(extendedPublicKey)) {
             if(childDerivationPath.endsWith("0/*")) {
                 return getChildDerivation(extendedPublicKey.getKey().getChildNumber(), childDerivationPath, wildCardReplacement);
@@ -171,6 +177,11 @@ public class OutputDescriptor {
             childDerivationPath = "/1/*";
         }
 
+        List<ChildNumber> multipathDerivation = getMultipathDerivation(extendedPublicKey, childDerivationPath, 1, wildCardReplacement);
+        if(multipathDerivation != null) {
+            return multipathDerivation;
+        }
+
         if(describesMultipleAddresses(extendedPublicKey)) {
             if(childDerivationPath.endsWith("0/*")) {
                 return getChildDerivation(extendedPublicKey.getKey().getChildNumber(), childDerivationPath.replace("0/*", "1/*"), wildCardReplacement);
@@ -182,6 +193,18 @@ public class OutputDescriptor {
         }
 
         throw new IllegalStateException("Cannot derive change address from output descriptor " + this.toString());
+    }
+
+    private List<ChildNumber> getMultipathDerivation(ExtendedKey extendedPublicKey, String childDerivationPath, int pathIndex, int wildCardReplacement) {
+        Matcher matcher = MULTIPATH_PATTERN.matcher(childDerivationPath);
+        if(matcher.find()) {
+            String[] paths = matcher.group(1).split(";");
+            if(pathIndex < paths.length) {
+                return getChildDerivation(extendedPublicKey.getKey().getChildNumber(), childDerivationPath.replace(matcher.group(), paths[pathIndex]), wildCardReplacement);
+            }
+        }
+
+        return null;
     }
 
     private List<ChildNumber> getChildDerivation(ChildNumber firstChild, String derivationPath, int wildCardReplacement) {
@@ -342,12 +365,15 @@ public class OutputDescriptor {
         for(Map.Entry<ExtendedKey, KeyDerivation> extKeyEntry : extendedPublicKeys.entrySet()) {
             ExtendedKey xpub = extKeyEntry.getKey();
             Keystore keystore = new Keystore();
+            String keystoreChildDerivation = null;
             if(extendedMasterPrivateKeys.containsKey(xpub)) {
                 ExtendedKey xprv = extendedMasterPrivateKeys.get(xpub);
                 MasterPrivateExtendedKey masterPrivateExtendedKey = new MasterPrivateExtendedKey(xprv.getKey().getPrivKeyBytes(), xprv.getKey().getChainCode());
                 String childDerivation = mapChildrenDerivations.get(xpub) == null ? scriptType.getDefaultDerivationPath() : mapChildrenDerivations.get(xpub);
-                if(childDerivation.endsWith("/<0;1>/*")) {
-                    childDerivation = childDerivation.substring(0, childDerivation.length() - 8);
+                Matcher chainsMatcher = CHAINS_PATTERN.matcher(childDerivation);
+                if(chainsMatcher.find()) {
+                    keystoreChildDerivation = chainsMatcher.group();
+                    childDerivation = childDerivation.substring(0, chainsMatcher.start());
                 } else if(childDerivation.endsWith("/0/*") || childDerivation.endsWith("/1/*")) {
                     childDerivation = childDerivation.substring(0, childDerivation.length() - 4);
                 }
@@ -361,7 +387,12 @@ public class OutputDescriptor {
                 keystore.setWalletModel(WalletModel.SPARROW);
                 keystore.setKeyDerivation(extKeyEntry.getValue());
                 keystore.setExtendedPublicKey(xpub);
+                String childDerivation = mapChildrenDerivations.get(xpub);
+                if(childDerivation != null && CHAINS_PATTERN.matcher(childDerivation).matches()) {
+                    keystoreChildDerivation = childDerivation;
+                }
             }
+            keystore.setChildDerivation(keystoreChildDerivation);
             setKeystoreLabel(keystore);
             wallet.makeLabelsUnique(keystore);
             wallet.getKeystores().add(keystore);
@@ -488,10 +519,10 @@ public class OutputDescriptor {
             if(keyPurposes != null) {
                 String chain;
                 if(keyPurposes.size() == 1) {
-                    chain = Integer.toString(keyPurposes.get(0).getPathIndex().num());
+                    chain = Integer.toString(keystore.getChildNumber(keyPurposes.get(0)).num());
                 } else {
                     StringJoiner joiner = new StringJoiner(";");
-                    keyPurposes.forEach(keyPurpose -> joiner.add(Integer.toString(keyPurpose.getPathIndex().num())));
+                    keyPurposes.forEach(keyPurpose -> joiner.add(Integer.toString(keystore.getChildNumber(keyPurpose).num())));
                     chain = "<" + joiner + ">";
                 }
 
@@ -588,7 +619,7 @@ public class OutputDescriptor {
                 ExtendedKey extendedKey = ExtendedKey.fromDescriptor(extKey);
                 if(childDerivationPath != null) {
                     try {
-                        List<ChildNumber> childPath = KeyDerivation.parsePath(childDerivationPath.replace("<0;1>", "0"));
+                        List<ChildNumber> childPath = KeyDerivation.parsePath(MULTIPATH_PATTERN.matcher(childDerivationPath).replaceFirst("0"));
                         if(childPath.size() > 2 && (extendedKey.getKey().hasPrivKey() || childPath.stream().noneMatch(ChildNumber::isHardened))) {
                             childDerivationPath = childDerivationPath.substring(childDerivationPath.lastIndexOf("/", childDerivationPath.lastIndexOf("/") - 1));
                             childPath = childPath.subList(0, childPath.size() - 2);

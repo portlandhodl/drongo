@@ -1,6 +1,8 @@
 package com.sparrowwallet.drongo.wallet;
 
 import com.sparrowwallet.drongo.KeyDerivation;
+import com.sparrowwallet.drongo.KeyPurpose;
+import com.sparrowwallet.drongo.crypto.ChildNumber;
 import com.sparrowwallet.drongo.crypto.DeterministicKey;
 import com.sparrowwallet.drongo.crypto.HDKeyDerivation;
 import com.sparrowwallet.drongo.policy.PolicyType;
@@ -193,5 +195,25 @@ public class KeystoreTest {
         MasterPrivateExtendedKey testVector5MPEK = new MasterPrivateExtendedKey(testVector5Key);
         Keystore keystore5 = Keystore.fromMasterPrivateExtendedKey(testVector5MPEK, PolicyType.SINGLE_HD, KeyDerivation.parsePath("m"));
         Assertions.assertEquals("xprv9s21ZrQH143K4UYT4rP3TZVKKbmRVmfRqTx9mG2xCy2JYipZbkLV8rwvBXsUbEv9KQiUD7oED1Wyi9evZzUn2rqK9skRgPkNaAzyw3YrpJN", keystore5.getExtendedMasterPrivateKey().toString());
+    }
+
+    @Test
+    public void testChildDerivation() {
+        Keystore keystore = new Keystore();
+        Assertions.assertEquals(new ChildNumber(0), keystore.getChildNumber(KeyPurpose.RECEIVE));
+        Assertions.assertEquals(new ChildNumber(1), keystore.getChildNumber(KeyPurpose.CHANGE));
+
+        keystore.setChildDerivation("/<20;21>/*");
+        Assertions.assertEquals(KeyPurpose.RECEIVE, keystore.getKeyPurpose(new ChildNumber(20)));
+        Assertions.assertEquals(KeyPurpose.CHANGE, keystore.getKeyPurpose(new ChildNumber(21)));
+        Assertions.assertNull(keystore.getKeyPurpose(new ChildNumber(0)));
+        Assertions.assertEquals("/<20;21>/*", keystore.copy().getChildDerivation());
+
+        keystore.setChildDerivation("/<0;1>/*");
+        Assertions.assertNull(keystore.getChildDerivation());
+
+        for(String invalid : List.of("/<5;5>/*", "/<0h;1h>/*", "/20/*", "/<0;1;2>/*", "<0;1>")) {
+            Assertions.assertThrows(IllegalArgumentException.class, () -> keystore.setChildDerivation(invalid), invalid);
+        }
     }
 }

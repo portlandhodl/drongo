@@ -11,10 +11,15 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.TreeMap;
+import java.util.stream.Stream;
 
 public class TransactionTest {
     @Test
@@ -643,5 +648,44 @@ public class TransactionTest {
 
         ECKey pubKey = ECKey.fromPublicOnly(privateKey);
         Assertions.assertTrue(pubKey.verify(hash, new TransactionSignature(sig, SigHash.DEFAULT)));
+    }
+
+    @Test
+    public void unsortedMultisigSpendingInput() {
+        //Keys deliberately not in BIP67 order, as used by a multi() policy
+        List<ECKey> privKeys = Stream.of("multi key c", "multi key b", "multi key a").map(seed -> ECKey.fromPrivate(Sha256Hash.hash(seed.getBytes(StandardCharsets.UTF_8)))).toList();
+        List<ECKey> pubKeys = privKeys.stream().map(key -> ECKey.fromPublicOnly(key.getPubKey())).toList();
+        Script unsortedScript = ScriptType.MULTISIG.getOutputScript(2, pubKeys, false);
+        Script sortedScript = ScriptType.MULTISIG.getOutputScript(2, pubKeys, true);
+        Assertions.assertNotEquals(sortedScript, unsortedScript);
+        Assertions.assertEquals(sortedScript, ScriptType.MULTISIG.getOutputScript(2, pubKeys));
+        Assertions.assertTrue(ScriptType.MULTISIG.getOutputDescriptor(unsortedScript).startsWith("multi(2,"));
+        Assertions.assertTrue(ScriptType.MULTISIG.getOutputDescriptor(sortedScript).startsWith("sortedmulti(2,"));
+
+        for(Script multisigScript : List.of(unsortedScript, sortedScript)) {
+            Transaction prevTx = new Transaction();
+            TransactionOutput prevOutput = prevTx.addOutput(100000L, ScriptType.P2WSH.getOutputScript(multisigScript));
+
+            Transaction transaction = new Transaction();
+            transaction.addInput(prevOutput.getHash(), prevOutput.getIndex(), new Script(new byte[0]));
+            transaction.addOutput(90000L, ScriptType.P2WPKH.getOutputScript(pubKeys.getFirst().getPubKeyHash()));
+            Sha256Hash sighash = transaction.hashForWitnessSignature(0, multisigScript, prevOutput.getValue(), SigHash.ALL);
+
+            //Signatures are provided in the key order of the script
+            List<ECKey> scriptKeys = List.of(ScriptType.MULTISIG.getPublicKeysFromScript(multisigScript));
+            Map<ECKey, TransactionSignature> pubKeySignatures = new LinkedHashMap<>();
+            for(ECKey scriptKey : scriptKeys) {
+                ECKey privKey = privKeys.stream().filter(key -> Arrays.equals(key.getPubKey(), scriptKey.getPubKey())).findFirst().orElseThrow();
+                pubKeySignatures.put(scriptKey, pubKeySignatures.size() < 2 ? privKey.sign(sighash, SigHash.ALL, TransactionSignature.Type.ECDSA) : null);
+            }
+
+            Transaction spendingTx = new Transaction();
+            TransactionInput input = ScriptType.P2WSH.addMultisigSpendingInput(PolicyType.MULTI_HD, spendingTx, prevOutput, 2, pubKeySignatures);
+            List<byte[]> pushes = input.getWitness().getPushes();
+            Assertions.assertArrayEquals(multisigScript.getProgram(), pushes.getLast());
+            List<TransactionSignature> signatures = pubKeySignatures.values().stream().filter(Objects::nonNull).toList();
+            Assertions.assertArrayEquals(signatures.get(0).encodeToBitcoin(), pushes.get(1));
+            Assertions.assertArrayEquals(signatures.get(1).encodeToBitcoin(), pushes.get(2));
+        }
     }
 }

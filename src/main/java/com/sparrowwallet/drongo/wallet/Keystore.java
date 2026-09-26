@@ -14,17 +14,21 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class Keystore extends Persistable {
     private static final Logger log = LoggerFactory.getLogger(Keystore.class);
 
     public static final String DEFAULT_LABEL = "Keystore 1";
     public static final int MAX_LABEL_LENGTH = 16;
+    private static final Pattern CHILD_DERIVATION_PATTERN = Pattern.compile("/<(\\d+);(\\d+)>/\\*");
 
     private String label;
     private KeystoreSource source = KeystoreSource.SW_WATCH;
     private WalletModel walletModel = WalletModel.SPARROW;
     private KeyDerivation keyDerivation;
+    private String childDerivation;
     private ExtendedKey extendedPublicKey;
     private PaymentCode externalPaymentCode;
     private SilentPaymentScanAddress silentPaymentScanAddress;
@@ -85,6 +89,67 @@ public class Keystore extends Persistable {
 
     public KeyDerivation getKeyDerivation() {
         return keyDerivation;
+    }
+
+    //The receive and change chains derived from the extended public key, for example /<20;21>/*, or null for the default /<0;1>/*
+    public String getChildDerivation() {
+        return childDerivation;
+    }
+
+    public void setChildDerivation(String childDerivation) {
+        if(childDerivation != null) {
+            Matcher matcher = CHILD_DERIVATION_PATTERN.matcher(childDerivation);
+            if(!matcher.matches() || matcher.group(1).equals(matcher.group(2))) {
+                throw new IllegalArgumentException("Invalid child derivation of " + childDerivation + ", must be of the form /<receive;change>/*");
+            }
+            if(childDerivation.equals("/<0;1>/*")) {
+                childDerivation = null;
+            }
+        }
+        this.childDerivation = childDerivation;
+    }
+
+    public ChildNumber getChildNumber(KeyPurpose keyPurpose) {
+        if(childDerivation == null) {
+            return keyPurpose.getPathIndex();
+        }
+
+        Matcher matcher = CHILD_DERIVATION_PATTERN.matcher(childDerivation);
+        if(!matcher.matches()) {
+            throw new IllegalStateException("Invalid child derivation of " + childDerivation);
+        }
+
+        return new ChildNumber(Integer.parseInt(keyPurpose == KeyPurpose.CHANGE ? matcher.group(2) : matcher.group(1)));
+    }
+
+    public KeyPurpose getKeyPurpose(ChildNumber childNumber) {
+        for(KeyPurpose keyPurpose : KeyPurpose.DEFAULT_PURPOSES) {
+            if(getChildNumber(keyPurpose).equals(childNumber)) {
+                return keyPurpose;
+            }
+        }
+
+        return null;
+    }
+
+    //Maps the key purpose chain of a wallet node derivation to the chain derived from the extended public key
+    private List<ChildNumber> getChildDerivation(List<ChildNumber> nodeDerivation) {
+        if(childDerivation == null || nodeDerivation.isEmpty()) {
+            return nodeDerivation;
+        }
+
+        KeyPurpose keyPurpose = KeyPurpose.fromChildNumber(nodeDerivation.getFirst());
+        if(keyPurpose == null) {
+            return nodeDerivation;
+        }
+
+        List<ChildNumber> derivation = new ArrayList<>(nodeDerivation);
+        derivation.set(0, getChildNumber(keyPurpose));
+        return derivation;
+    }
+
+    public KeyDerivation getDerivation(WalletNode walletNode) {
+        return getKeyDerivation().extend(getChildDerivation(walletNode.getDerivation()));
     }
 
     public void setKeyDerivation(KeyDerivation keyDerivation) {
@@ -260,7 +325,7 @@ public class Keystore extends Persistable {
         ExtendedKey extendedPrivateKey = getExtendedPrivateKey();
         List<ChildNumber> derivation = new ArrayList<>();
         derivation.add(extendedPrivateKey.getKeyChildNumber());
-        derivation.addAll(walletNode.getDerivation());
+        derivation.addAll(getChildDerivation(walletNode.getDerivation()));
         return extendedPrivateKey.getKey(derivation);
     }
 
@@ -291,12 +356,12 @@ public class Keystore extends Persistable {
 
         List<ChildNumber> derivation = new ArrayList<>();
         derivation.add(extendedPublicKey.getKeyChildNumber());
-        derivation.addAll(walletNode.getDerivation());
+        derivation.addAll(getChildDerivation(walletNode.getDerivation()));
         return extendedPublicKey.getKey(derivation);
     }
 
     public KeyDerivation getDerivation(KeyPurpose keyPurpose, int keyIndex) {
-        return getKeyDerivation().extend(keyPurpose.getPathIndex()).extend(new ChildNumber(keyIndex));
+        return getKeyDerivation().extend(getChildNumber(keyPurpose)).extend(new ChildNumber(keyIndex));
     }
 
     public ECKey getPubKeyForDerivation(KeyDerivation keyDerivation) {
@@ -311,8 +376,9 @@ public class Keystore extends Persistable {
                 }
             }
 
-            if(derivation.size() == 2 && KeyPurpose.fromChildNumber(derivation.get(0)) != null && fingerprint.equals(keyDerivation.getMasterFingerprint())) {
-                return getPubKey(new WalletNode(KeyDerivation.writePath(derivation)));
+            KeyPurpose keyPurpose = derivation.size() == 2 ? getKeyPurpose(derivation.get(0)) : null;
+            if(keyPurpose != null && fingerprint.equals(keyDerivation.getMasterFingerprint())) {
+                return getPubKey(new WalletNode(KeyDerivation.writePath(List.of(keyPurpose.getPathIndex(), derivation.get(1)))));
             }
         }
 
@@ -393,6 +459,10 @@ public class Keystore extends Persistable {
             throw new InvalidKeystoreException("Invalid master fingerprint of " + keyDerivation.getMasterFingerprint());
         }
 
+        if(childDerivation != null && (source == KeystoreSource.SW_PAYMENT_CODE || silentPaymentScanAddress != null)) {
+            throw new InvalidKeystoreException("Child derivation of " + childDerivation + " is not supported for " + source + " keystores");
+        }
+
         if(source == KeystoreSource.SW_SEED) {
             if(seed == null && masterPrivateExtendedKey == null) {
                 throw new InvalidKeystoreException("Source of " + source + " but no seed or master private key is present");
@@ -448,6 +518,7 @@ public class Keystore extends Persistable {
         if(keyDerivation != null) {
             copy.setKeyDerivation(keyDerivation.copy());
         }
+        copy.setChildDerivation(childDerivation);
         if(extendedPublicKey != null) {
             copy.setExtendedPublicKey(extendedPublicKey.copy());
         }

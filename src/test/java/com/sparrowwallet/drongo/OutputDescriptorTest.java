@@ -5,6 +5,7 @@ import com.sparrowwallet.drongo.crypto.ECKey;
 import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.ScriptType;
 import com.sparrowwallet.drongo.silentpayments.SilentPaymentScanAddress;
+import com.sparrowwallet.drongo.wallet.Keystore;
 import com.sparrowwallet.drongo.wallet.Wallet;
 import com.sparrowwallet.drongo.wallet.WalletNode;
 import org.junit.jupiter.api.Assertions;
@@ -602,5 +603,60 @@ public class OutputDescriptorTest {
         Assertions.assertTrue(wallet.isSortedMultisig());
         Assertions.assertEquals("bc1qk5xy0ehuf83afz90v729z6pmxgcluaqptvxqh8v99c3xml5zz4gs8gdlcn", new WalletNode(wallet, KeyPurpose.RECEIVE, 0).getAddress().toString());
         Assertions.assertEquals("bc1q29wdy2cata0z59c8l8v2fz26f0v7ulstr292mlnuzt58vrxs069srz6wl6", new WalletNode(wallet, KeyPurpose.CHANGE, 0).getAddress().toString());
+    }
+
+    @Test
+    public void testCustomChildDerivation() {
+        //Expected addresses from Bitcoin Core deriveaddresses
+        OutputDescriptor descriptor = OutputDescriptor.getOutputDescriptor(unsortedDescriptor("multi", "/0/0/<20;21>/*"));
+        Assertions.assertEquals("bc1qejjpms4tvwdtqp0kgc95kvf2s8n233meytrpal6xcvlqekqc90hq9s3p4h", descriptor.getAddress(descriptor.getReceivingDerivation(0)).toString());
+        Assertions.assertEquals("bc1qz2e3lrey4232pk6upr4fwn68uef5nu84u5ljy8n90acg3vxles3q0denk0", descriptor.getAddress(descriptor.getChangeDerivation(0)).toString());
+
+        Wallet wallet = descriptor.toWallet();
+        for(Keystore keystore : wallet.getKeystores()) {
+            Assertions.assertEquals("/<20;21>/*", keystore.getChildDerivation());
+            Assertions.assertEquals(new ChildNumber(20), keystore.getChildNumber(KeyPurpose.RECEIVE));
+            Assertions.assertEquals(new ChildNumber(21), keystore.getChildNumber(KeyPurpose.CHANGE));
+        }
+        Assertions.assertEquals("bc1qejjpms4tvwdtqp0kgc95kvf2s8n233meytrpal6xcvlqekqc90hq9s3p4h", new WalletNode(wallet, KeyPurpose.RECEIVE, 0).getAddress().toString());
+        Assertions.assertEquals("bc1qecyv9c5hhj79g8jxlc6v92065jct89d64kcas3eqaymgwwmneq4q03fppf", new WalletNode(wallet, KeyPurpose.RECEIVE, 1).getAddress().toString());
+        Assertions.assertEquals("bc1qyjxq2gv8uq5tza9n7a6rjl644ejx5rgyu850twwpymn7n6d0e6xqcvfrm9", new WalletNode(wallet, KeyPurpose.RECEIVE, 2).getAddress().toString());
+        Assertions.assertEquals("bc1qz2e3lrey4232pk6upr4fwn68uef5nu84u5ljy8n90acg3vxles3q0denk0", new WalletNode(wallet, KeyPurpose.CHANGE, 0).getAddress().toString());
+        Assertions.assertEquals("bc1qtsp3r2qkle068kzckhqu4kfm78tu923wdvzpqy4l8pzrh68698tqpuj7gg", new WalletNode(wallet, KeyPurpose.CHANGE, 2).getAddress().toString());
+
+        //Signers must be given the full derivation to the key, including the custom chain
+        Keystore keystore = wallet.getKeystores().getFirst();
+        WalletNode change5 = new WalletNode(wallet, KeyPurpose.CHANGE, 5);
+        KeyDerivation keyDerivation = keystore.getDerivation(change5);
+        Assertions.assertEquals("00000004", keyDerivation.getMasterFingerprint());
+        Assertions.assertEquals("m/0/0/0/0/0/0/21/5", keyDerivation.getDerivationPath());
+        Assertions.assertEquals(keyDerivation, keystore.getDerivation(KeyPurpose.CHANGE, 5));
+        Assertions.assertEquals(keystore.getPubKey(change5), keystore.getPubKeyForDerivation(keyDerivation));
+        Assertions.assertNull(keystore.getPubKeyForDerivation(keystore.getKeyDerivation().extend(new ChildNumber(1)).extend(new ChildNumber(5))));
+
+        OutputDescriptor walletDescriptor = OutputDescriptor.getOutputDescriptor(wallet, KeyPurpose.DEFAULT_PURPOSES, null);
+        Assertions.assertTrue(walletDescriptor.toString().contains("/<20;21>/*"));
+        Wallet roundTrip = OutputDescriptor.getOutputDescriptor(walletDescriptor.toString()).toWallet();
+        Assertions.assertEquals("bc1qejjpms4tvwdtqp0kgc95kvf2s8n233meytrpal6xcvlqekqc90hq9s3p4h", new WalletNode(roundTrip, KeyPurpose.RECEIVE, 0).getAddress().toString());
+        Assertions.assertEquals("bc1qz2e3lrey4232pk6upr4fwn68uef5nu84u5ljy8n90acg3vxles3q0denk0", new WalletNode(roundTrip, KeyPurpose.CHANGE, 0).getAddress().toString());
+    }
+
+    @Test
+    public void testCustomChildDerivationSortedMultisig() {
+        Wallet wallet = OutputDescriptor.getOutputDescriptor(unsortedDescriptor("sortedmulti", "/<20;21>/*")).toWallet();
+        Assertions.assertTrue(wallet.isSortedMultisig());
+        Assertions.assertEquals("bc1q6ekfrczzr9cz5ljn0zk42ll8m2x8lyz5cfn6pf3zd0tm5rwmpchqypfvfh", new WalletNode(wallet, KeyPurpose.RECEIVE, 0).getAddress().toString());
+        Assertions.assertEquals("bc1q7hrpc678q4wmjf437nquplvpxt3zhz7a67q8mzgajaf3h80ujvzqsemtl9", new WalletNode(wallet, KeyPurpose.RECEIVE, 1).getAddress().toString());
+        Assertions.assertEquals("bc1qppyc2kevezcpqgxcswshadtg9xu696kx36s59087ak725pucez9qcmeeay", new WalletNode(wallet, KeyPurpose.CHANGE, 0).getAddress().toString());
+    }
+
+    @Test
+    public void testDefaultChildDerivationUnchanged() {
+        Wallet wallet = OutputDescriptor.getOutputDescriptor(unsortedDescriptor("multi", "/<0;1>/*")).toWallet();
+        for(Keystore keystore : wallet.getKeystores()) {
+            Assertions.assertNull(keystore.getChildDerivation());
+        }
+        Assertions.assertEquals("bc1q95rnxlmjfw80jcn0g7pef2048a8qaylp2al90rfscekr452dnmxsl2cy4k", new WalletNode(wallet, KeyPurpose.RECEIVE, 0).getAddress().toString());
+        Assertions.assertEquals("bc1q3d6ulcasrekq83y8hj0lf6alyqrapm8l7qevjsf90qtjqgzm6auqwednrk", new WalletNode(wallet, KeyPurpose.CHANGE, 0).getAddress().toString());
     }
 }

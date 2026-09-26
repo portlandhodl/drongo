@@ -1690,7 +1690,7 @@ public class Wallet extends Persistable implements Comparable<Wallet> {
                 continue;
             }
 
-            KeyPurpose keyPurpose = KeyPurpose.fromChildNumber(remaining.get(0));
+            KeyPurpose keyPurpose = keystore.getKeyPurpose(remaining.get(0));
             int addressIndex = remaining.get(1).num();
 
             if(keyPurpose == null || !getWalletKeyPurposes().contains(keyPurpose)) {
